@@ -51,6 +51,10 @@
   internal `<shinychat-raw-html>` wrapper displayed as literal text and the
   UI never bound.
 
+* Messages passed to `chat_ui(messages = )` are no longer captured in the chat's
+  persisted transcript. Because the page markup re-renders them on every load,
+  restoring a bookmark previously showed each of them twice.
+
 * `chat_app()` no longer renders a close button or registers a `stopApp()` observer when deployed to a server. Both are now gated on `rlang::is_interactive()`, preventing session crashes in multi-user deployments. (#265)
 
 * The `dismissible` parameter of `chat_greeting()` has been renamed to `persistent` with an inverted value. `dismissible = FALSE` (greeting stays visible) is now `persistent = TRUE`. The old `dismissible` argument still works but warns. When both `persistent` and `dismissible` are provided, `persistent` now takes precedence silently rather than erroring. (#260)

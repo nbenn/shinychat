@@ -6,8 +6,8 @@ test_that("encode/decode UI snapshot round-trips a simple message", {
     )
   )
   encoded <- encode_ui_snapshot(messages)
-  expect_type(encoded, "character")
-  expect_length(encoded, 1L)
+  expect_identical(encoded$version, UI_SNAPSHOT_VERSION)
+  expect_type(encoded$state, "character")
   expect_identical(decode_ui_snapshot(encoded), messages)
 })
 
@@ -29,48 +29,50 @@ test_that("encode/decode UI snapshot preserves htmlDeps and attachments", {
   expect_identical(decode_ui_snapshot(encode_ui_snapshot(messages)), messages)
 })
 
-test_that("encode returns NULL for empty input; decode guards non-values", {
+test_that("encode returns NULL for empty input; decode passes through NULL", {
   expect_null(encode_ui_snapshot(list()))
   expect_null(encode_ui_snapshot(NULL))
+  # A bookmark saved before this feature existed simply has no `_ui` value, and
+  # that is not worth warning about.
   expect_null(decode_ui_snapshot(NULL))
-  expect_null(decode_ui_snapshot(""))
-  expect_null(decode_ui_snapshot(NA_character_))
 })
 
 test_that("decode_ui_snapshot warns and returns NULL for corrupted input", {
   expect_warning(
-    expect_null(decode_ui_snapshot("not valid base64/gzip")),
+    expect_null(
+      decode_ui_snapshot(
+        list(version = UI_SNAPSHOT_VERSION, state = "not valid base64/gzip")
+      )
+    ),
     "could not be decoded"
   )
   expect_warning(
     expect_null(
-      decode_ui_snapshot(base64enc::base64encode(charToRaw("not gzip")))
+      decode_ui_snapshot(
+        list(
+          version = UI_SNAPSHOT_VERSION,
+          state = base64enc::base64encode(charToRaw("not gzip"))
+        )
+      )
     ),
     "could not be decoded"
   )
 })
 
-test_that("decode_ui_snapshot rejects well-formed payloads that aren't a transcript", {
-  # A payload can survive base64/gzip/serializeJSON intact and still be the
-  # wrong shape; replay must not reach `message$role` on it.
-  not_transcripts <- list(
-    1L,
-    "hello",
-    list(role = "user"),
-    list(list(role = "user")),
-    list(list(role = "user", segments = list(list(content = "hi")))),
-    list(list(role = 1L, segments = list())),
-    list(
-      list(
-        role = "user",
-        segments = list(list(content = "hi", content_type = c("a", "b")))
-      )
-    )
+test_that("decode_ui_snapshot rejects a snapshot from another format version", {
+  # Bookmark URLs outlive the shinychat that wrote them, so a snapshot whose
+  # envelope we don't recognize takes the documented fallback rather than
+  # feeding an unreplayable payload to restore.
+  unreadable <- list(
+    list(version = 2L, state = gzip_b64_encode(list())),
+    list(state = gzip_b64_encode(list())),
+    "a bare string from some older format",
+    1L
   )
-  for (payload in not_transcripts) {
+  for (payload in unreadable) {
     expect_warning(
-      expect_null(decode_ui_snapshot(gzip_b64_encode(payload))),
-      "not a chat transcript",
+      expect_null(decode_ui_snapshot(payload)),
+      "not in a format this shinychat can read",
       info = paste(utils::capture.output(str(payload)), collapse = " ")
     )
   }
@@ -92,7 +94,7 @@ test_that("decode_ui_snapshot accepts a transcript with optional fields", {
   expect_identical(decode_ui_snapshot(encode_ui_snapshot(messages)), messages)
 })
 
-test_that("a malformed snapshot routes restore to the turn-derived fallback", {
+test_that("an unreadable snapshot routes restore to the turn-derived fallback", {
   session <- shiny::MockShinySession$new()
   fallback_calls <- 0L
   local_mocked_bindings(
@@ -100,11 +102,13 @@ test_that("a malformed snapshot routes restore to the turn-derived fallback", {
       fallback_calls <<- fallback_calls + 1L
     }
   )
-  state <- rlang::env(values = list(chat_ui = gzip_b64_encode(1L)))
+  state <- rlang::env(
+    values = list(chat_ui = list(version = 2L, state = gzip_b64_encode(list())))
+  )
 
   expect_warning(
     bookmark_restore_ui(state, client = NULL, id = "chat", session = session),
-    "not a chat transcript"
+    "not in a format this shinychat can read"
   )
   expect_equal(fallback_calls, 1L)
 })
@@ -213,7 +217,7 @@ test_that("bookmark save/restore round-trips the displayed UI (server store)", {
 
   state <- rlang::env(values = list())
   bookmark_save_ui(state, session, "chat")
-  expect_type(state$values[["chat_ui"]], "character")
+  expect_identical(state$values[["chat_ui"]]$version, UI_SNAPSHOT_VERSION)
 
   captured <- list()
   local_mocked_bindings(

@@ -90,30 +90,39 @@ method(client_set_ui, S7::new_S3_class(c("Chat", "R6"))) <-
   }
 
 # Serialize the browser-reported message snapshot for storage in a bookmark's
-# state$values.
+# state$values. Versioned like client_get_state(): bookmark URLs outlive the
+# shinychat that wrote them, so a later format change needs a way to say "this
+# isn't mine" rather than handing an unreplayable payload to restore.
+UI_SNAPSHOT_VERSION <- 1L
+
 encode_ui_snapshot <- function(messages) {
   if (is.null(messages) || length(messages) == 0) {
     return(NULL)
   }
-  gzip_b64_encode(messages)
+  list(
+    version = UI_SNAPSHOT_VERSION,
+    state = gzip_b64_encode(messages)
+  )
 }
 
 # Returns NULL for anything we can't confidently replay, so callers fall through
 # to the turn-derived UI documented in ?chat_restore rather than aborting the
 # whole onRestore handler. Warns on the way, since a silent downgrade from
 # faithful restore to re-derived UI is otherwise undiagnosable.
-decode_ui_snapshot <- function(str) {
-  if (
-    is.null(str) ||
-      !is.character(str) ||
-      length(str) != 1 ||
-      is.na(str) ||
-      !nzchar(str)
-  ) {
+decode_ui_snapshot <- function(snapshot) {
+  if (is.null(snapshot)) {
     return(NULL)
   }
-  snapshot <- tryCatch(
-    gzip_b64_decode(str),
+  # `==` rather than identical(), matching client_set_state(): a version can
+  # come back as a double if the store round-trips through JSON.
+  if (!is.list(snapshot) || !isTRUE(snapshot$version == UI_SNAPSHOT_VERSION)) {
+    rlang::warn(
+      "Saved chat UI snapshot is not in a format this shinychat can read; restoring the chat UI from the client's turns instead."
+    )
+    return(NULL)
+  }
+  tryCatch(
+    gzip_b64_decode(snapshot$state),
     error = function(e) {
       rlang::warn(
         c(
@@ -124,34 +133,6 @@ decode_ui_snapshot <- function(str) {
       NULL
     }
   )
-  if (is.null(snapshot)) {
-    return(NULL)
-  }
-  if (!is_ui_snapshot(snapshot)) {
-    rlang::warn(
-      "Saved chat UI snapshot is not a chat transcript; restoring the chat UI from the client's turns instead."
-    )
-    return(NULL)
-  }
-  snapshot
-}
-
-is_ui_snapshot <- function(x) {
-  is.list(x) && is.null(names(x)) && all(vapply(x, is_ui_message, logical(1)))
-}
-
-is_ui_message <- function(x) {
-  is.list(x) &&
-    is_string(x$role) &&
-    is.list(x$segments) &&
-    is.null(names(x$segments)) &&
-    all(vapply(x$segments, is_ui_segment, logical(1))) &&
-    (is.null(x$attachments) || is.list(x$attachments)) &&
-    (is.null(x$htmlDeps) || is.list(x$htmlDeps))
-}
-
-is_ui_segment <- function(x) {
-  is.list(x) && is_string(x$content) && is_string(x$content_type)
 }
 
 # Render restored chat UI: replay the browser's stored message snapshot when we
