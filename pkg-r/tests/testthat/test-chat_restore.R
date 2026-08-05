@@ -196,6 +196,46 @@ test_that("restore_chat_ui falls back to client turns when snapshot is empty lis
   expect_equal(fallback_calls, 1L)
 })
 
+test_that("restore_chat_ui falls back without sending anything when a message is unreplayable", {
+  # A snapshot that decodes fine (right version, valid JSON) but whose
+  # per-message shape doesn't hold up must fall back before replaying
+  # anything -- not partway through, which would leave the client with a
+  # partial snapshot replay *and* the full turn-derived fallback stacked on
+  # top (restore_history_message() can't be undone once called).
+  replay_calls <- 0L
+  fallback_calls <- 0L
+  local_mocked_bindings(
+    restore_history_message = function(chat_id, message, session) {
+      replay_calls <<- replay_calls + 1L
+    },
+    client_set_ui = function(client, ..., id) {
+      fallback_calls <<- fallback_calls + 1L
+    }
+  )
+  session <- shiny::MockShinySession$new()
+
+  unreplayable <- list(
+    list(
+      role = "user",
+      segments = list(list(content = "hi", content_type = "markdown"))
+    ),
+    list(role = "assistant", segments = "not a list")
+  )
+
+  expect_warning(
+    restore_chat_ui(
+      client = NULL,
+      id = "chat",
+      ui_snapshot = unreplayable,
+      session = session
+    ),
+    "unreplayable message"
+  )
+
+  expect_equal(replay_calls, 0L)
+  expect_equal(fallback_calls, 1L)
+})
+
 test_that("bookmark save/restore round-trips the displayed UI (server store)", {
   session <- shiny::MockShinySession$new()
   snapshot_in <- list(

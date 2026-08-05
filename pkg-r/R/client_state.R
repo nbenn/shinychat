@@ -138,15 +138,36 @@ decode_ui_snapshot <- function(snapshot) {
 # Render restored chat UI: replay the browser's stored message snapshot when we
 # have one (faithful to what the user saw, incl. display-only transforms),
 # otherwise re-derive the UI from the client's turns as before.
+#
+# Checked before replaying anything, not caught mid-loop: restore_history_message()
+# sends each message to the client as it's called, so an error partway through
+# can't be undone by falling back -- the client would end up with the first N
+# snapshot messages *and* the full turn-derived replay stacked on top. A snapshot
+# that's the wrong version is already routed to the fallback by decode_ui_snapshot();
+# this catches a snapshot that decodes fine (right version, valid JSON) but whose
+# per-message shape doesn't hold up -- e.g. bit-level corruption that survives
+# gzip/base64/serializeJSON round-tripping intact.
 restore_chat_ui <- function(client, id, ui_snapshot, session) {
   if (!is.null(ui_snapshot) && length(ui_snapshot) > 0) {
-    for (message in ui_snapshot) {
-      restore_history_message(id, message, session = session)
+    if (!all(vapply(ui_snapshot, is_replayable_ui_message, logical(1)))) {
+      rlang::warn(
+        "Saved chat UI snapshot has an unreplayable message; restoring the chat UI from the client's turns instead."
+      )
+    } else {
+      for (message in ui_snapshot) {
+        restore_history_message(id, message, session = session)
+      }
+      return(invisible())
     }
-    return(invisible())
   }
   client_set_ui(client, id = id)
   invisible()
+}
+
+is_replayable_ui_message <- function(message) {
+  is.list(message) &&
+    is_string(message$role) &&
+    is.list(message$segments)
 }
 
 # Shared codec for anything we stash in a bookmark's state$values.
